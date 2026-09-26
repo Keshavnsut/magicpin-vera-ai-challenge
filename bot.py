@@ -185,11 +185,25 @@ def _fallback_compose(category: dict[str, Any], merchant: dict[str, Any], trigge
     return {"body": re.sub(r"\s+", " ", body).strip(), "cta": cta, "rationale": f"Composed for the {kind or 'current'} trigger using the supplied merchant and {category.get('slug', 'category')} context; no external facts added."}
 
 
+def _llm_settings() -> tuple[str, str, str] | None:
+    """Return compatible chat-completions settings for the configured provider."""
+    provider = os.getenv("LLM_PROVIDER", "").strip().lower()
+    if not provider:
+        provider = "groq" if os.getenv("GROQ_API_KEY") else "openai"
+    if provider == "groq":
+        key = os.getenv("GROQ_API_KEY")
+        return (key, os.getenv("GROQ_MODEL", "openai/gpt-oss-20b"), "https://api.groq.com/openai/v1/chat/completions") if key else None
+    if provider == "openai":
+        key = os.getenv("OPENAI_API_KEY")
+        return (key, os.getenv("OPENAI_MODEL", "gpt-4o-mini"), "https://api.openai.com/v1/chat/completions") if key else None
+    return None
+
+
 def _openai_compose(category: dict[str, Any], merchant: dict[str, Any], trigger: dict[str, Any], customer: dict[str, Any] | None, fallback: dict[str, str]) -> dict[str, str]:
-    key = os.getenv("OPENAI_API_KEY")
-    if not key:
+    settings = _llm_settings()
+    if not settings:
         return fallback
-    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    key, model, endpoint = settings
     system = (
         "You compose concise WhatsApp messages for the synthetic magicpin Vera challenge. "
         "Use only facts present in the JSON contexts. Never invent prices, dates, slots, sources, metrics, actions, "
@@ -205,7 +219,7 @@ def _openai_compose(category: dict[str, Any], merchant: dict[str, Any], trigger:
         "messages": [{"role": "system", "content": system},
                      {"role": "user", "content": "Compose from these contexts. The deterministic baseline is included only as a quality reference; correct it if context requires.\n" + json.dumps({"contexts": context, "baseline": fallback}, ensure_ascii=False)}]
     }, ensure_ascii=False).encode("utf-8")
-    req = Request("https://api.openai.com/v1/chat/completions", data=request_body,
+    req = Request(endpoint, data=request_body,
                   headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"}, method="POST")
     try:
         with urlopen(req, timeout=float(os.getenv("OPENAI_TIMEOUT_SECONDS", "8"))) as response:
@@ -443,16 +457,16 @@ def reply(body: ReplyRequest):
 
 
 def _openai_reply(conv: dict[str, Any], latest: str) -> dict[str, str]:
-    key = os.getenv("OPENAI_API_KEY")
-    if not key:
+    settings = _llm_settings()
+    if not settings:
         return {"body": "Thanks — I'll use that detail in the draft. Is there anything specific you'd like included?", "cta": "open_ended", "rationale": "Acknowledged the merchant's response and advanced the original task."}
-    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    key, model, endpoint = settings
     system = "Continue this synthetic merchant support conversation. Honor explicit requests, do not invent facts or claim work was completed, respect category taboos, and keep the next step concise. Return JSON: body, cta, rationale. No URLs."
     data = {"model": model, "temperature": 0, "response_format": {"type": "json_object"}, "messages": [
         {"role": "system", "content": system},
         {"role": "user", "content": json.dumps({"category": conv["category"], "merchant": conv["merchant"], "trigger": conv["trigger"], "conversation": conv["turns"], "latest_reply": latest}, ensure_ascii=False)}
     ]}
-    req = Request("https://api.openai.com/v1/chat/completions", data=json.dumps(data, ensure_ascii=False).encode(),
+    req = Request(endpoint, data=json.dumps(data, ensure_ascii=False).encode(),
                   headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"}, method="POST")
     try:
         with urlopen(req, timeout=float(os.getenv("OPENAI_TIMEOUT_SECONDS", "8"))) as resp:
@@ -479,11 +493,12 @@ def healthz():
 @app.get("/v1/metadata")
 def metadata():
     members = [x.strip() for x in os.getenv("TEAM_MEMBERS", "").split(",") if x.strip()]
+    llm_settings = _llm_settings()
     return {
         "team_name": os.getenv("TEAM_NAME", "Vera Challenge Participant"),
         "team_members": members,
-        "model": os.getenv("OPENAI_MODEL", "gpt-4o-mini") if os.getenv("OPENAI_API_KEY") else "deterministic-fallback",
-        "approach": "Context-grounded trigger routing with deterministic safeguards and optional OpenAI composition",
+        "model": llm_settings[1] if llm_settings else "deterministic-fallback",
+        "approach": "Context-grounded trigger routing with deterministic safeguards and optional OpenAI-compatible composition",
         "contact_email": os.getenv("CONTACT_EMAIL", ""),
         "version": os.getenv("APP_VERSION", "1.0.0"),
         "submitted_at": os.getenv("SUBMITTED_AT", ""),

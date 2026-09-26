@@ -9,7 +9,7 @@ python -m pip install -r requirements.txt
 uvicorn bot:app --host 0.0.0.0 --port 8080
 ```
 
-Set `OPENAI_API_KEY` and optionally `OPENAI_MODEL` in the environment to enable model composition. Do not commit secrets. `TEAM_NAME`, `TEAM_MEMBERS`, and `CONTACT_EMAIL` configure judge metadata.
+Set `LLM_PROVIDER=groq`, `GROQ_API_KEY`, and optionally `GROQ_MODEL` (default `openai/gpt-oss-20b`) in the environment to enable Groq composition. OpenAI is also supported with `LLM_PROVIDER=openai`, `OPENAI_API_KEY`, and `OPENAI_MODEL`. Do not commit secrets. `TEAM_NAME`, `TEAM_MEMBERS`, and `CONTACT_EMAIL` configure judge metadata.
 
 ## Dataset and submission
 
@@ -26,7 +26,7 @@ To run the supplied judge simulator, start the bot in one terminal and configure
 
 ## Deploy
 
-`render.yaml` defines a Render web service. Connect this repository in Render, provide `OPENAI_API_KEY` as a secret, and set team metadata in the service environment. The app responds at `/v1/*`; synthetic challenge data is held in process memory and `/v1/teardown` clears it.
+`render.yaml` defines a Render web service. Connect this repository in Render, provide `GROQ_API_KEY` as a secret, and set team metadata in the service environment. The app responds at `/v1/*`; synthetic challenge data is held in process memory and `/v1/teardown` clears it.
 
 ## Tradeoffs
 
