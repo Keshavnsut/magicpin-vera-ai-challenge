@@ -36,6 +36,14 @@ def _merchant_name(merchant: dict[str, Any]) -> str:
     return (merchant.get("identity") or {}).get("name") or "the business"
 
 
+def _taboo_terms(category: dict[str, Any]) -> list[str]:
+    voice = category.get("voice") or {}
+    values = voice.get("vocab_taboo") or voice.get("taboos") or []
+    if isinstance(values, str):
+        values = [values]
+    return [str(value).strip() for value in values if str(value).strip()]
+
+
 def _active_offer(merchant: dict[str, Any], category: dict[str, Any]) -> str | None:
     offers = merchant.get("offers") or []
     for offer in offers:
@@ -95,18 +103,36 @@ def _fallback_compose(category: dict[str, Any], merchant: dict[str, Any], trigge
             return {"body": "", "cta": "none", "rationale": "Customer consent scope is absent; no customer message composed."}
         slots = payload.get("available_slots") or payload.get("next_session_options") or []
         slot_labels = [str(s.get("label")) for s in slots if s.get("label")]
-        state = customer.get("state", "")
+        if kind == "appointment_tomorrow":
+            service = payload.get("service") or payload.get("service_due")
+            appointment_time = payload.get("appointment_time") or payload.get("time")
+            detail = f" for {str(service).replace('_', ' ')}" if service else ""
+            when = f" at {appointment_time}" if appointment_time else ""
+            body = f"Hi {first}, a reminder from {biz}: your appointment is tomorrow{detail}{when}. Need help with anything?"
+            return {"body": body, "cta": "open_ended", "rationale": "Appointment reminder based on the trigger and the customer's consented appointment-reminder scope."}
         if kind in {"recall_due", "customer_lapsed_soft", "customer_lapsed_hard", "chronic_refill_due", "trial_followup", "wedding_package_followup"}:
-            service = payload.get("service_due") or payload.get("intent_topic") or "follow-up"
-            detail = f"Your {str(service).replace('_', ' ')} is due. " if kind == "recall_due" else ""
-            body = f"Hi {first}, {biz} here. {detail}"
-            if payload.get("days_since_last_visit"):
-                body += f"It's been {payload['days_since_last_visit']} days since your last visit; no pressure. "
+            service = payload.get("service_due") or payload.get("intent_topic")
+            service_text = str(service).replace('_', ' ') if service else ""
+            body = f"Hi {first}, {biz} here. "
+            if kind == "recall_due":
+                body += f"Your {service_text} is due. " if service_text else "Your recall reminder is due. "
+            elif kind == "chronic_refill_due":
+                body += f"Your refill reminder for {service_text} is due. " if service_text else "Your refill reminder is due. "
+            elif kind == "trial_followup":
+                body += f"We’re checking in about {service_text}. " if service_text else "We’re checking in after your trial. "
+            elif kind == "wedding_package_followup":
+                body += f"We’re checking in about {service_text}. " if service_text else "We’re checking in about your wedding package enquiry. "
+            elif kind in {"customer_lapsed_soft", "customer_lapsed_hard"}:
+                days_since = payload.get("days_since_last_visit")
+                body += f"It’s been {days_since} days since your last visit; no pressure. " if days_since else "Just checking in; no pressure if now isn’t a good time. "
             if slot_labels:
                 body += f"{hi}: {', '.join(slot_labels)}. "
-            if offer:
+            scopes = set(allowed)
+            may_mention_offer = scopes.intersection({"promotional_offers", "winback_offers"})
+            if offer and may_mention_offer and kind in {"customer_lapsed_soft", "customer_lapsed_hard", "trial_followup", "wedding_package_followup"}:
                 body += f"Current offer: {offer}. "
-            body += "Would you like us to help arrange a visit?"
+            ask = "Would you like help with a follow-up?" if kind == "chronic_refill_due" else "Would you like help arranging a visit?"
+            body += ask
             cta = "binary_yes_no"
             return {"body": body, "cta": cta, "rationale": f"Customer follow-up based on the {kind} trigger, available schedule and consented contact scope."}
         return {"body": f"Hi {first}, a quick update from {biz}. Reply if you'd like us to help.", "cta": "open_ended", "rationale": f"Customer message is limited to the supplied {kind} context."}
@@ -129,18 +155,40 @@ def _fallback_compose(category: dict[str, Any], merchant: dict[str, Any], trigge
             ask = "Want me to summarize the supplied details?"
         body += " " + ask
     elif kind in {"perf_dip", "seasonal_perf_dip", "perf_spike"}:
-        metric = payload.get("metric") or "views"
+        metric = payload.get("metric")
         delta = payload.get("delta_pct")
-        if delta is None:
+        if delta is None and metric:
             delta = ((performance.get("delta_7d") or {}).get(f"{metric}_pct"))
-        change = f"{abs(float(delta)):.0%}" if isinstance(delta, (int, float)) else ""
-        direction = "down" if isinstance(delta, (int, float)) and delta < 0 else "up"
-        body = f"{who}, your {metric} are {direction}{(' ' + change) if change else ''} over {payload.get('window', 'the reported period')} according to this trigger."
+        if isinstance(delta, (int, float)):
+            change = f" {abs(float(delta)):.0%}"
+            direction = "down" if kind in {"perf_dip", "seasonal_perf_dip"} else "up"
+            window = payload.get("window", "the reported period")
+            if metric:
+                verb = "fell" if direction == "down" else "rose"
+                body = f"{who}, your {metric} {verb}{change} over {window}, according to the trigger."
+            else:
+                body = f"{who}, the trigger reports performance moved {direction}{change} over {window}."
+        else:
+            direction = "dip" if kind in {"perf_dip", "seasonal_perf_dip"} else "spike"
+            body = f"{who}, the trigger flags a performance {direction}, but doesn’t include the metric or amount. Want me to review the latest performance snapshot with you?"
+            if payload.get("is_expected_seasonal") and payload.get("season_note"):
+                body = f"{who}, the trigger flags a seasonal performance dip ({payload['season_note'].replace('_', ' ')}), but doesn’t include the metric or amount. Want me to review the latest snapshot with you?"
+            return {"body": body, "cta": "open_ended", "rationale": "Performance follow-up limited to the details present in the trigger and merchant snapshot."}
         if payload.get("is_expected_seasonal") and payload.get("season_note"):
             body += f" The context flags this as seasonal: {payload['season_note'].replace('_', ' ')}."
         body += " Want me to outline one practical next step?"
     elif kind == "renewal_due":
-        body = f"{who}, your {payload.get('plan', 'current')} plan renewal is coming up in {payload.get('days_remaining', 'a few')} days."
+        plan = payload.get("plan")
+        days_remaining = payload.get("days_remaining")
+        if plan or days_remaining is not None:
+            plan_text = f"{str(plan)} plan " if plan else "plan "
+            body = f"{who}, your {plan_text}renewal is coming up"
+            if days_remaining is not None:
+                body += f" in {days_remaining} days"
+            body += "."
+        else:
+            body = f"{who}, the latest trigger says your plan renewal is coming up, but doesn’t include a date. Would you like me to help check the renewal details?"
+            return {"body": body, "cta": "open_ended", "rationale": "Renewal follow-up avoids supplying a date or plan that is absent from the trigger."}
         if payload.get("renewal_amount") is not None:
             body += f" The listed renewal amount is ₹{payload['renewal_amount']}."
         body += " Would you like the renewal details?"
@@ -152,35 +200,95 @@ def _fallback_compose(category: dict[str, Any], merchant: dict[str, Any], trigge
         body += " Shall I draft the plan now?"
         cta = "binary_yes_no"
     elif kind == "ipl_match_today":
-        body = f"{who}, {payload.get('match', 'the match')} is scheduled at {payload.get('match_time_iso', 'the time in your trigger')} at {payload.get('venue', 'the listed venue')}."
+        match = payload.get("match")
+        match_time = payload.get("match_time_iso")
+        venue = payload.get("venue")
+        if match and match_time and venue:
+            body = f"{who}, {match} is scheduled at {match_time} at {venue}."
+        else:
+            body = f"{who}, the trigger flags an IPL match today"
+            available = [str(x) for x in (match, match_time, venue) if x]
+            if available:
+                body += f" ({', '.join(available)})"
+            body += "."
         if offer:
             body += f" Your active offer is {offer}."
-        body += " Want me to draft a match-day post using only that offer?"
+        body += " Want me to draft a match-day post using the supplied details?"
     elif kind == "review_theme_emerged":
-        body = f"{who}, {payload.get('occurrences_30d', 'Several')} recent reviews mention {str(payload.get('theme', 'a recurring theme')).replace('_', ' ')}."
+        theme = payload.get("theme")
+        occurrences = payload.get("occurrences_30d")
+        if theme:
+            body = f"{who}, {occurrences if occurrences is not None else 'Recent'} reviews mention {str(theme).replace('_', ' ')}."
+        else:
+            body = f"{who}, the review update flags a recurring theme, but doesn’t include the theme or count."
+            return {"body": body + " Want to share the theme so I can draft a response?", "cta": "open_ended", "rationale": "Review response offer avoids inventing a theme or review count."}
         if payload.get("trend"):
             body += f" The reported trend is {payload['trend']}."
         body += " Want a short response draft for your review?"
     elif kind == "milestone_reached":
-        body = f"{who}, you're approaching {payload.get('milestone_value', 'the next')} {str(payload.get('metric', 'milestone')).replace('_', ' ')}; the current value is {payload.get('value_now', 'in the trigger')}. Want a simple post draft to mark it?"
+        milestone = payload.get("milestone_value")
+        metric = payload.get("metric")
+        value_now = payload.get("value_now")
+        if milestone is None or metric is None or value_now is None:
+            body = f"{who}, the latest trigger marks a milestone but doesn’t specify the metric or value. Which milestone did you reach? I can draft a short post around it."
+            return {"body": body, "cta": "open_ended", "rationale": "Milestone follow-up asks for the missing metric instead of inventing one."}
+        body = f"{who}, you're approaching {milestone} {str(metric).replace('_', ' ')}; the current value is {value_now}. Want a simple post draft to mark it?"
     elif kind == "curious_ask_due":
         body = f"Hi {who}, quick question: what service has customers asked about most this week? I can turn your answer into a short post."
     elif kind == "festival_upcoming":
-        body = f"{who}, {payload.get('festival', 'the upcoming festival')} is listed for {payload.get('date', 'the date in your trigger')}."
+        festival = payload.get("festival")
+        festival_date = payload.get("date")
+        if festival and festival_date:
+            body = f"{who}, {festival} is listed for {festival_date}."
+        else:
+            body = f"{who}, the trigger flags an upcoming festival"
+            if festival:
+                body += f" ({festival})"
+            if festival_date:
+                body += f" on {festival_date}"
+            body += ", but doesn’t include all the timing details."
         if offer:
             body += f" You already have {offer}."
-        body += " Want a timely post draft built around it?"
+        body += " Want a timely post draft built around the supplied details?"
     elif kind == "competitor_opened":
-        body = f"{who}, {payload.get('competitor_name', 'a nearby competitor')} is listed {payload.get('distance_km', 'nearby')} km away, with {payload.get('their_offer', 'an offer in the trigger')}. Want to review how your current offer compares?"
+        competitor = payload.get("competitor_name")
+        distance = payload.get("distance_km")
+        their_offer = payload.get("their_offer")
+        if not any((competitor, distance is not None, their_offer)):
+            body = f"{who}, the trigger flags a nearby competitor opening, but doesn’t include its name or offer. Have you noticed a new business nearby? I can compare the details with your current offer."
+        else:
+            details = [str(competitor)] if competitor else []
+            if distance is not None:
+                details.append(f"{distance} km away")
+            if their_offer:
+                details.append(str(their_offer))
+            body = f"{who}, the trigger lists a competitor {'; '.join(details)}. Want to compare it with your current offer?"
     elif kind == "dormant_with_vera":
-        body = f"Hi {who}, it's been {payload.get('days_since_last_merchant_message', 'a while')} days since we last spoke about {str(payload.get('last_topic', 'your account')).replace('_', ' ')}. Is there one thing you'd like help with this week?"
+        days = payload.get("days_since_last_merchant_message")
+        topic = payload.get("last_topic")
+        body = f"Hi {who}, it's been {days} days since we last spoke" if days is not None else f"Hi {who}, it’s been a while since we last spoke"
+        if topic:
+            body += f" about {str(topic).replace('_', ' ')}"
+        body += ". Is there one thing you'd like help with this week?"
     elif kind == "gbp_unverified":
-        body = f"{who}, your Google Business Profile is marked unverified in the latest trigger. The listed path is {str(payload.get('verification_path', 'the provided verification process')).replace('_', ' ')}. Want me to walk you through the next step?"
+        path = payload.get("verification_path")
+        body = f"{who}, your Google Business Profile is marked unverified in the latest trigger."
+        if path:
+            body += f" The listed path is {str(path).replace('_', ' ')}."
+        body += " Want help reviewing the verification steps?"
     elif kind == "category_seasonal":
         trends = ", ".join(str(x).replace("_", " ") for x in payload.get("trends", [])[:3])
         body = f"{who}, the seasonal update flags these demand shifts: {trends or payload.get('season', 'seasonal changes')}. Want a short shelf or post checklist based on this?"
     elif kind == "winback_eligible":
-        body = f"{who}, since your plan expired {payload.get('days_since_expiry', 'several')} days ago, the trigger reports {payload.get('lapsed_customers_added_since_expiry', 'some')} additional lapsed customers. Want to review a practical re-engagement idea?"
+        days = payload.get("days_since_expiry")
+        added = payload.get("lapsed_customers_added_since_expiry")
+        details = []
+        if days is not None:
+            details.append(f"your plan expired {days} days ago")
+        if added is not None:
+            details.append(f"the trigger reports {added} additional lapsed customers")
+        summary = ", and ".join(details) if details else "this trigger marks the account as eligible for a winback"
+        body = f"{who}, {summary}. Want to review a practical re-engagement idea?"
     else:
         body = f"{who}, I have an update about {kind.replace('_', ' ') or 'your business'} based on the latest trigger. Want me to summarize the next useful step?"
 
@@ -227,8 +335,10 @@ def _openai_compose(category: dict[str, Any], merchant: dict[str, Any], trigger:
     system = (
         "You compose concise WhatsApp messages for the synthetic magicpin Vera challenge. "
         "Use only facts present in the JSON contexts. Never invent prices, dates, slots, sources, metrics, actions, "
-        "availability, policies, or customer data. Match category voice and language. Respect voice.vocab_taboo. "
+        "availability, policies, or customer data. Match category voice and language. Respect all taboo vocabulary in the category voice profile. "
         "For customer-facing messages require explicit consent scope for this trigger. Use one primary CTA. "
+        "Mention consent only in customer-facing messages when the supplied scope requires it; never ask a merchant "
+        "for permission to use their details unless a supplied context explicitly requires that. "
         "Never include URLs. Do not claim an action has already happened. Return only JSON with string keys body, cta, rationale. "
         "Allowed cta values: none, open_ended, binary_yes_no, multi_choice_slot. Keep the rationale aligned with the body."
     )
@@ -248,7 +358,7 @@ def _openai_compose(category: dict[str, Any], merchant: dict[str, Any], trigger:
         body = str(result.get("body", "")).strip()
         cta = str(result.get("cta", "open_ended"))
         rationale = str(result.get("rationale", "")).strip()
-        taboo = [str(x).lower() for x in (category.get("voice") or {}).get("vocab_taboo", [])]
+        taboo = [x.lower() for x in _taboo_terms(category)]
         if not body or len(body) > 1800 or re.search(r"https?://|www\.", body, re.I) or any(t and t in body.lower() for t in taboo):
             _logger.warning("llm_compose provider=%s model=%s result=fallback reason=output_validation_failed", provider, model)
             return fallback
@@ -270,7 +380,16 @@ def _openai_compose(category: dict[str, Any], merchant: dict[str, Any], trigger:
 def compose(category: dict, merchant: dict, trigger: dict, customer: dict | None = None) -> dict[str, str]:
     """Compose one grounded message from category, merchant, trigger, and optional customer contexts."""
     fallback = _fallback_compose(category or {}, merchant or {}, trigger or {}, customer)
-    return _openai_compose(category or {}, merchant or {}, trigger or {}, customer, fallback)
+    result = _openai_compose(category or {}, merchant or {}, trigger or {}, customer, fallback)
+    if any(term.lower() in result.get("body", "").lower() for term in _taboo_terms(category or {})):
+        result = {
+            "body": "Hi there, would you like a concise update based only on the information you provided?",
+            "cta": "open_ended",
+            "rationale": "Used a neutral message because the supplied phrasing contained category-taboo language.",
+        }
+    result["send_as"] = "merchant_on_behalf" if customer else "vera"
+    result["suppression_key"] = str((trigger or {}).get("suppression_key") or (trigger or {}).get("id") or "")
+    return result
 
 
 class ContextPush(BaseModel):
@@ -313,10 +432,13 @@ def push_context(body: ContextPush):
     key = (body.scope, body.context_id)
     with _contexts_lock:
         current = _contexts.get(key)
-        if current and current["version"] >= body.version:
+        if current and current["version"] > body.version:
             return JSONResponse(status_code=409, content={"accepted": False, "reason": "stale_version", "current_version": current["version"]})
-        _contexts[key] = {"version": body.version, "payload": body.payload}
-    return {"accepted": True, "ack_id": f"ack_{body.context_id}_v{body.version}", "stored_at": _iso_now()}
+        if current and current["version"] == body.version:
+            return {"accepted": True, "ack_id": f"ack_{body.context_id}_v{body.version}", "stored_at": current["stored_at"]}
+        stored_at = _iso_now()
+        _contexts[key] = {"version": body.version, "payload": body.payload, "stored_at": stored_at}
+    return {"accepted": True, "ack_id": f"ack_{body.context_id}_v{body.version}", "stored_at": stored_at}
 
 
 def _template(kind: str, customer: dict[str, Any] | None) -> str:

@@ -7,15 +7,11 @@ services:
     healthCheckPath: /v1/healthz
     envVars:
       - key: LLM_PROVIDER
-        value: groq
-      - key: GROQ_API_KEY
-        sync: false
-      - key: GROQ_MODEL
-        value: openai/gpt-oss-20b
+        value: gemini
       - key: GEMINI_API_KEY
         sync: false
       - key: GEMINI_MODEL
-        value: gemini-3.8-flash
+        value: gemini-3.5-flash-lite
       - key: TEAM_NAME
         value: Vera Challenge Participant
       - key: TEAM_MEMBERS
