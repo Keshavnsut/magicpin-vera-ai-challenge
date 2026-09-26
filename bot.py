@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import time
@@ -16,6 +17,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 app = FastAPI(title="Vera Challenge Bot", version="1.0.0")
+_logger = logging.getLogger("uvicorn.error")
 _STARTED = time.time()
 _contexts: dict[tuple[str, str], dict[str, Any]] = {}
 _contexts_lock = RLock()
@@ -199,11 +201,17 @@ def _llm_settings() -> tuple[str, str, str] | None:
     return None
 
 
+def _llm_provider_name(endpoint: str) -> str:
+    return "groq" if "api.groq.com" in endpoint else "openai"
+
+
 def _openai_compose(category: dict[str, Any], merchant: dict[str, Any], trigger: dict[str, Any], customer: dict[str, Any] | None, fallback: dict[str, str]) -> dict[str, str]:
     settings = _llm_settings()
     if not settings:
+        _logger.warning("llm_compose result=fallback reason=provider_or_api_key_missing")
         return fallback
     key, model, endpoint = settings
+    provider = _llm_provider_name(endpoint)
     system = (
         "You compose concise WhatsApp messages for the synthetic magicpin Vera challenge. "
         "Use only facts present in the JSON contexts. Never invent prices, dates, slots, sources, metrics, actions, "
@@ -230,11 +238,20 @@ def _openai_compose(category: dict[str, Any], merchant: dict[str, Any], trigger:
         rationale = str(result.get("rationale", "")).strip()
         taboo = [str(x).lower() for x in (category.get("voice") or {}).get("vocab_taboo", [])]
         if not body or len(body) > 1800 or re.search(r"https?://|www\.", body, re.I) or any(t and t in body.lower() for t in taboo):
+            _logger.warning("llm_compose provider=%s model=%s result=fallback reason=output_validation_failed", provider, model)
             return fallback
         if cta not in {"none", "open_ended", "binary_yes_no", "multi_choice_slot"}:
             cta = fallback["cta"]
+        _logger.info("llm_compose provider=%s model=%s result=success", provider, model)
         return {"body": body, "cta": cta, "rationale": rationale or fallback["rationale"]}
-    except (HTTPError, URLError, TimeoutError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+    except HTTPError as exc:
+        _logger.warning("llm_compose provider=%s model=%s result=fallback reason=http_error status=%d", provider, model, exc.code)
+        return fallback
+    except (URLError, TimeoutError) as exc:
+        _logger.warning("llm_compose provider=%s model=%s result=fallback reason=transport_error error_type=%s", provider, model, type(exc).__name__)
+        return fallback
+    except (ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        _logger.warning("llm_compose provider=%s model=%s result=fallback reason=invalid_response error_type=%s", provider, model, type(exc).__name__)
         return fallback
 
 
@@ -459,8 +476,10 @@ def reply(body: ReplyRequest):
 def _openai_reply(conv: dict[str, Any], latest: str) -> dict[str, str]:
     settings = _llm_settings()
     if not settings:
+        _logger.warning("llm_reply result=fallback reason=provider_or_api_key_missing")
         return {"body": "Thanks — I'll use that detail in the draft. Is there anything specific you'd like included?", "cta": "open_ended", "rationale": "Acknowledged the merchant's response and advanced the original task."}
     key, model, endpoint = settings
+    provider = _llm_provider_name(endpoint)
     system = "Continue this synthetic merchant support conversation. Honor explicit requests, do not invent facts or claim work was completed, respect category taboos, and keep the next step concise. Return JSON: body, cta, rationale. No URLs."
     data = {"model": model, "temperature": 0, "response_format": {"type": "json_object"}, "messages": [
         {"role": "system", "content": system},
@@ -475,8 +494,16 @@ def _openai_reply(conv: dict[str, Any], latest: str) -> dict[str, str]:
         body = str(result.get("body", "")).strip()
         if not body or re.search(r"https?://|www\.", body, re.I):
             raise ValueError("invalid completion")
+        _logger.info("llm_reply provider=%s model=%s result=success", provider, model)
         return {"body": body, "cta": str(result.get("cta", "open_ended")), "rationale": str(result.get("rationale", "Continued the conversation using its current context."))}
-    except (HTTPError, URLError, TimeoutError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+    except HTTPError as exc:
+        _logger.warning("llm_reply provider=%s model=%s result=fallback reason=http_error status=%d", provider, model, exc.code)
+        return {"body": "Thanks — I'll use that detail in the draft. Is there anything specific you'd like included?", "cta": "open_ended", "rationale": "Acknowledged the merchant's response and advanced the original task."}
+    except (URLError, TimeoutError) as exc:
+        _logger.warning("llm_reply provider=%s model=%s result=fallback reason=transport_error error_type=%s", provider, model, type(exc).__name__)
+        return {"body": "Thanks — I'll use that detail in the draft. Is there anything specific you'd like included?", "cta": "open_ended", "rationale": "Acknowledged the merchant's response and advanced the original task."}
+    except (ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        _logger.warning("llm_reply provider=%s model=%s result=fallback reason=invalid_response error_type=%s", provider, model, type(exc).__name__)
         return {"body": "Thanks — I'll use that detail in the draft. Is there anything specific you'd like included?", "cta": "open_ended", "rationale": "Acknowledged the merchant's response and advanced the original task."}
 
 

@@ -11,6 +11,8 @@ uvicorn bot:app --host 0.0.0.0 --port 8080
 
 Set `LLM_PROVIDER=groq`, `GROQ_API_KEY`, and optionally `GROQ_MODEL` (default `openai/gpt-oss-20b`) in the environment to enable Groq composition. OpenAI is also supported with `LLM_PROVIDER=openai`, `OPENAI_API_KEY`, and `OPENAI_MODEL`. Do not commit secrets. `TEAM_NAME`, `TEAM_MEMBERS`, and `CONTACT_EMAIL` configure judge metadata.
 
+Render logs report LLM composition/reply success or a safe fallback reason, plus provider/model and HTTP status when available. Logs do not include API keys, prompts, context payloads, or generated message bodies.
+
 ## Dataset and submission
 
 The archive provides seed data and a deterministic expander. Rebuild the expanded dataset and canonical test set with:
