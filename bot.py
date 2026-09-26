@@ -191,10 +191,18 @@ def _llm_settings() -> tuple[str, str, str] | None:
     """Return compatible chat-completions settings for the configured provider."""
     provider = os.getenv("LLM_PROVIDER", "").strip().lower()
     if not provider:
-        provider = "groq" if os.getenv("GROQ_API_KEY") else "openai"
+        if os.getenv("GROQ_API_KEY"):
+            provider = "groq"
+        elif os.getenv("GEMINI_API_KEY"):
+            provider = "gemini"
+        else:
+            provider = "openai"
     if provider == "groq":
         key = os.getenv("GROQ_API_KEY")
         return (key, os.getenv("GROQ_MODEL", "openai/gpt-oss-20b"), "https://api.groq.com/openai/v1/chat/completions") if key else None
+    if provider == "gemini":
+        key = os.getenv("GEMINI_API_KEY")
+        return (key, os.getenv("GEMINI_MODEL", "gemini-3.8-flash"), "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions") if key else None
     if provider == "openai":
         key = os.getenv("OPENAI_API_KEY")
         return (key, os.getenv("OPENAI_MODEL", "gpt-4o-mini"), "https://api.openai.com/v1/chat/completions") if key else None
@@ -202,7 +210,11 @@ def _llm_settings() -> tuple[str, str, str] | None:
 
 
 def _llm_provider_name(endpoint: str) -> str:
-    return "groq" if "api.groq.com" in endpoint else "openai"
+    if "api.groq.com" in endpoint:
+        return "groq"
+    if "generativelanguage.googleapis.com" in endpoint:
+        return "gemini"
+    return "openai"
 
 
 def _openai_compose(category: dict[str, Any], merchant: dict[str, Any], trigger: dict[str, Any], customer: dict[str, Any] | None, fallback: dict[str, str]) -> dict[str, str]:

@@ -9,7 +9,9 @@ python -m pip install -r requirements.txt
 uvicorn bot:app --host 0.0.0.0 --port 8080
 ```
 
-Set `LLM_PROVIDER=groq`, `GROQ_API_KEY`, and optionally `GROQ_MODEL` (default `openai/gpt-oss-20b`) in the environment to enable Groq composition. OpenAI is also supported with `LLM_PROVIDER=openai`, `OPENAI_API_KEY`, and `OPENAI_MODEL`. Do not commit secrets. `TEAM_NAME`, `TEAM_MEMBERS`, and `CONTACT_EMAIL` configure judge metadata.
+Set `LLM_PROVIDER=groq`, `GROQ_API_KEY`, and optionally `GROQ_MODEL` (default `openai/gpt-oss-20b`) in the environment to enable Groq composition. Google Gemini is also supported through its OpenAI-compatible endpoint with `LLM_PROVIDER=gemini`, `GEMINI_API_KEY`, and optionally `GEMINI_MODEL` (default `gemini-3.8-flash`). OpenAI is supported with `LLM_PROVIDER=openai`, `OPENAI_API_KEY`, and `OPENAI_MODEL`. Do not commit secrets. `TEAM_NAME`, `TEAM_MEMBERS`, and `CONTACT_EMAIL` configure judge metadata.
+
+The Gemini API free tier currently has limited model and rate-limit availability, and Google states free-tier content may be used to improve its products. Review Google's current terms before sending anything other than synthetic challenge data.
 
 Render logs report LLM composition/reply success or a safe fallback reason, plus provider/model and HTTP status when available. Logs do not include API keys, prompts, context payloads, or generated message bodies.
 
@@ -28,7 +30,7 @@ To run the supplied judge simulator, start the bot in one terminal and configure
 
 ## Deploy
 
-`render.yaml` defines a Render web service. Connect this repository in Render, provide `GROQ_API_KEY` as a secret, and set team metadata in the service environment. The app responds at `/v1/*`; synthetic challenge data is held in process memory and `/v1/teardown` clears it.
+`render.yaml` defines a Render web service. Connect this repository in Render, provide the API key for the selected provider as a secret, and set `LLM_PROVIDER` plus team metadata in the service environment. For Gemini, set `LLM_PROVIDER=gemini`, add `GEMINI_API_KEY`, and use `GEMINI_MODEL=gemini-3.8-flash` (or another model enabled for your AI Studio project). The app responds at `/v1/*`; synthetic challenge data is held in process memory and `/v1/teardown` clears it.
 
 ## Tradeoffs
 

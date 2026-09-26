@@ -12,6 +12,10 @@ services:
         sync: false
       - key: GROQ_MODEL
         value: openai/gpt-oss-20b
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-3.8-flash
       - key: TEAM_NAME
         value: Vera Challenge Participant
       - key: TEAM_MEMBERS
